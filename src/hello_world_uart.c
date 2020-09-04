@@ -54,6 +54,7 @@
 #include "am_util.h"
 
 //#define FLOW_CTRL
+#define TEMP_BUFF_SIZE 40
 
 //*****************************************************************************
 //
@@ -177,9 +178,10 @@ int
 main(void)
 {
 	uint32_t ui32NumBytesWritten;
-	uint8_t ui8outData[40] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40};
+	uint8_t ui8outData[TEMP_BUFF_SIZE] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40};
 	uint32_t ui32NumBytesRead;
-	uint8_t ui8inData[40];
+	uint8_t ui8inData[TEMP_BUFF_SIZE];
+	uint32_t ui32index=0;
 	
 	am_hal_gpio_pincfg_t pincfg = {0};
 
@@ -250,8 +252,17 @@ main(void)
 		if(g_bRxTimeoutFlag)
 		{
 			g_bRxTimeoutFlag = false;
-			ui32NumBytesRead = uart_buff_receive(40, ui8inData, 0);
+			ui32NumBytesRead = uart_buff_receive(TEMP_BUFF_SIZE-ui32index, ui8inData+ui32index, 0);
 			am_util_stdio_printf("IN %d\n",ui32NumBytesRead);
+			ui32index += ui32NumBytesRead;
+			if(ui32index >= TEMP_BUFF_SIZE)
+			{
+				for(int i=0; i < TEMP_BUFF_SIZE; i++)
+					am_util_stdio_printf("%d ",ui8inData[i]);
+				am_util_stdio_printf("\n");
+				ui32index = 0;
+			}
+			
 		}
 
 		//
