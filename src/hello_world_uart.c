@@ -53,6 +53,8 @@
 #include "am_bsp.h"
 #include "am_util.h"
 
+//#define FLOW_CTRL
+
 //*****************************************************************************
 //
 // UART handle.
@@ -60,6 +62,9 @@
 //*****************************************************************************
 void *phUART;
 volatile bool g_bRxTimeoutFlag = false;
+
+uint8_t g_pui8TxBuffer[1024];
+uint8_t g_pui8RxBuffer[1024];
 
 
 
@@ -77,13 +82,22 @@ const am_hal_uart_config_t g_sUartConfig =
     .ui32DataBits = AM_HAL_UART_DATA_BITS_8,
     .ui32Parity = AM_HAL_UART_PARITY_NONE,
     .ui32StopBits = AM_HAL_UART_ONE_STOP_BIT,
+#ifdef FLOW_CTRL
     .ui32FlowControl = AM_HAL_UART_FLOW_CTRL_RTS_CTS,
+#else
+	.ui32FlowControl = AM_HAL_UART_FLOW_CTRL_NONE,
+#endif
 
     //
     // Set TX and RX FIFOs to interrupt at half-full.
     //
     .ui32FifoLevels = (AM_HAL_UART_TX_FIFO_1_2 |
                        AM_HAL_UART_RX_FIFO_1_2),
+
+	.pui8TxBuffer = g_pui8TxBuffer,
+    .ui32TxBufferSize = sizeof(g_pui8TxBuffer),
+    .pui8RxBuffer = g_pui8RxBuffer,
+    .ui32RxBufferSize = sizeof(g_pui8RxBuffer),
 };
 
 //*****************************************************************************
@@ -97,10 +111,11 @@ am_uart_isr(void)
     //
     // Service the FIFOs as necessary, and clear the interrupts.
     //
-    uint32_t ui32Status;
+    uint32_t ui32Status, ui32Idle;
     am_hal_uart_interrupt_status_get(phUART, &ui32Status, true);
     am_hal_uart_interrupt_clear(phUART, ui32Status);
-
+	am_hal_uart_interrupt_service(phUART, ui32Status, &ui32Idle);
+	
     if (ui32Status & (AM_HAL_UART_INT_RX_TMOUT | AM_HAL_UART_INT_RX))
     {
 		g_bRxTimeoutFlag = true;
@@ -108,13 +123,62 @@ am_uart_isr(void)
 }
 
 
-void uart_fifo_read_write()
+uint16_t uart_buff_send(uint16_t size, const uint8_t *data, uint32_t timeout)
+{
+
+    uint32_t ret = AM_HAL_STATUS_SUCCESS;
+    uint32_t transfer_size;
+
+    am_hal_uart_transfer_t sUartWrite = {
+        .ui32Direction = AM_HAL_UART_WRITE,
+        .pui8Data = (uint8_t *)data,
+        .ui32NumBytes = size,
+        .ui32TimeoutMs = timeout,
+        .pui32BytesTransferred = &transfer_size,
+    };
+
+    ret = am_hal_uart_transfer(phUART, &sUartWrite);
+
+    if (ret == AM_HAL_STATUS_SUCCESS)
+		return transfer_size;
+	else
+		return 0;
+}
+
+uint16_t uart_buff_receive(uint16_t size, uint8_t *data, uint32_t timeout)
+{
+
+    uint32_t ret = AM_HAL_STATUS_SUCCESS;
+    uint32_t transfer_size;
+
+    am_hal_uart_transfer_t sUartRead = {
+        .ui32Direction = AM_HAL_UART_READ,
+        .pui8Data = (uint8_t *) data,
+        .ui32NumBytes = size,
+        .ui32TimeoutMs = timeout,
+        .pui32BytesTransferred = &transfer_size,
+    };
+
+    ret = am_hal_uart_transfer(phUART, &sUartRead);
+
+    if (ret == AM_HAL_STATUS_SUCCESS)
+        return transfer_size;
+	else
+		return 0;
+
+}
+
+
+uint8_t ui8inData[40];
+void uart_buff_read_write()
 {
 	uint32_t ui32NumBytesWritten;
 	uint32_t ui32NumBytesRead;
-	uint8_t ui8inData;
-	am_hal_uart_fifo_read(phUART, &ui8inData, 1,&ui32NumBytesRead);
-	am_hal_uart_fifo_write(phUART, &ui8inData,  1, &ui32NumBytesWritten);
+	
+	ui32NumBytesRead = uart_buff_receive(40, ui8inData, 0);
+	am_util_stdio_printf("IN %d\n",ui32NumBytesRead);
+	ui32NumBytesWritten = uart_buff_send(ui32NumBytesRead, ui8inData, AM_HAL_UART_WAIT_FOREVER);
+	am_util_stdio_printf("OUT %d\n",ui32NumBytesWritten);
 }
 
 //*****************************************************************************
@@ -125,10 +189,9 @@ void uart_fifo_read_write()
 int
 main(void)
 {
-    am_util_id_t sIdDevice;
-    uint32_t ui32StrBuf;
+#ifdef FLOW_CTRL
 	am_hal_gpio_pincfg_t pincfg = {0};
-
+#endif
     //
     // Set the clock frequency.
     //
@@ -157,18 +220,19 @@ main(void)
     //
     am_hal_gpio_pinconfig(AM_BSP_GPIO_COM_UART_TX, g_AM_BSP_GPIO_COM_UART_TX);
     am_hal_gpio_pinconfig(AM_BSP_GPIO_COM_UART_RX, g_AM_BSP_GPIO_COM_UART_RX);
-	
+
+#ifdef FLOW_CTRL	
 	pincfg.uFuncSel = AM_HAL_PIN_33_UA0CTS;
 	am_hal_gpio_pinconfig(33, pincfg);
 	pincfg.uFuncSel = AM_HAL_PIN_37_UA0RTS;	
 	pincfg.eDriveStrength = AM_HAL_GPIO_PIN_DRIVESTRENGTH_2MA;
 	am_hal_gpio_pinconfig(37, pincfg);
-
+#endif
     //
     // Enable interrupts.
     //
     NVIC_EnableIRQ((IRQn_Type)(UART0_IRQn + AM_BSP_UART_PRINT_INST));
-	am_hal_uart_interrupt_enable(phUART, (AM_HAL_UART_INT_RX | AM_HAL_UART_INT_RX_TMOUT));
+	am_hal_uart_interrupt_enable(phUART, (AM_HAL_UART_INT_RX | AM_HAL_UART_INT_TX | AM_HAL_UART_INT_RX_TMOUT | AM_HAL_UART_INT_TXCMP));
     am_hal_interrupt_master_enable();
 
 	//
@@ -180,7 +244,7 @@ main(void)
     // Print the banner.
     //
     am_util_stdio_terminal_clear();
-    am_util_stdio_printf("Hello World!\n\n");
+    am_util_stdio_printf("UART Buffer\n\n");
 	
 	
     //
@@ -190,8 +254,8 @@ main(void)
     {
 		if(g_bRxTimeoutFlag)
 		{
-			uart_fifo_read_write();
 			g_bRxTimeoutFlag = false;
+			uart_buff_read_write();
 		}
 
 		//
